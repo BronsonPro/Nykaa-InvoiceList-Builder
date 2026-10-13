@@ -2,7 +2,8 @@
 
 Upload **all three** files and download `InvoiceList_<PONumber>.xlsx` in Nykaa's upload format:
 
-1. **Master file(s)**: Excel with columns `EAN` and `MRP` (gives Invoice MRP). More than one file is allowed.
+1. **Master file(s)**: Excel with an `EAN Code` (or `EAN`) column and an `MRP` column (gives Invoice MRP).
+   More than one file is allowed, and every sheet is read. An optional `Nykaa Code` column is used as a backup match.
 2. **Nykaa PO**: `PoAlpha_*.xls` (gives columns A–J)
 3. **Sales invoice**: Tally GST invoice `.xlsx` (gives columns K–V)
 
@@ -56,7 +57,7 @@ streamlit run app.py
 | K Invoice No | "Invoice No. :" on the sales invoice |
 | L Invoice Date | "Date :" on the sales invoice, as DD/MM/YYYY |
 | M Invoice Qty | QTY Nos |
-| N Invoice MRP | MRP from the Master file, looked up by EAN (left blank if not found, with a warning) |
+| N Invoice MRP | MRP from the Master file: matched by invoice EAN, then PO EAN, then PO Item Code = `Nykaa Code` (left blank with a warning if none match) |
 | O Invoice Cost | Rate × (1 − Disc%/100) ÷ (1 + GST%/100) |
 | P Discount | Disc% ÷ 100 (shown as %) |
 | Q Tax Rate | GST% |
