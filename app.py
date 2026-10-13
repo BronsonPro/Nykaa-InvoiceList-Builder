@@ -10,7 +10,7 @@ Run locally:   streamlit run app.py
 import pandas as pd
 import streamlit as st
 
-from converter import (auto_match, build_invoice_list, invoice_values, load_master, norm_ean,
+from converter import (auto_match, build_invoice_list, invoice_values, load_master, lookup_mrp,
                        output_filename, parse_po, parse_sales_invoice, po_to_rows, suggest)
 
 st.set_page_config(page_title="Nykaa InvoiceList", page_icon="🧾", layout="wide")
@@ -20,7 +20,7 @@ st.caption("Upload the Master file, the Nykaa PO and the sales invoice, then dow
 
 # ---- uploads ------------------------------------------------------------------
 u1, u2, u3 = st.columns(3)
-master_files = u1.file_uploader("1 · Master file(s) – EAN & MRP", type=["xlsx", "xls"],
+master_files = u1.file_uploader("1 · Master file(s) – EAN Code & MRP", type=["xlsx", "xls"],
                                 accept_multiple_files=True)
 po_file = u2.file_uploader("2 · Nykaa PO (PoAlpha_*.xls)", type=["xls", "xlsx", "xml"])
 inv_file = u3.file_uploader("3 · Sales invoice", type=["xlsx", "xls"])
@@ -37,7 +37,7 @@ with u1:
     for m in msgs:
         (st.caption if "loaded" in m else st.warning)(m)
 if not master_mrp:
-    st.error("No EAN/MRP data found in the Master file(s). It needs columns named 'EAN' and 'MRP'.")
+    st.error("No MRP data found in the Master file(s). It needs an 'EAN Code' (or 'EAN') column and an 'MRP' column.")
     st.stop()
 
 try:
@@ -113,7 +113,7 @@ if left_po:
 rows, no_mrp, over_qty = [], [], []
 for j, i in sorted(pairs.items(), key=lambda kv: po.lines[kv[1]].line_no):
     il, pl = inv.lines[j], po.lines[i]
-    mrp = master_mrp.get(il.ean, master_mrp.get(norm_ean(pl.ean)))
+    mrp = lookup_mrp(master_mrp, il.ean, pl.ean, pl.sku_code)
     if mrp is None:
         no_mrp.append(f"line {pl.line_no} (EAN {il.ean})")
     if il.qty > pl.qty:
