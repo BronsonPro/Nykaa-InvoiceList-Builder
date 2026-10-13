@@ -307,33 +307,64 @@ def parse_sales_invoice(data: bytes) -> SalesInvoice:
     return inv
 
 
+EAN_HEADERS = {"EAN", "EAN CODE", "EAN NO", "EAN NUMBER", "BARCODE"}
+SKU_HEADERS = {"NYKAA CODE", "NYKAA SKU", "SKU CODE", "ITEM CODE"}
+
+
 def load_master(files: list[tuple[str, bytes]]) -> tuple[dict, list[str]]:
-    """Master file(s) with columns 'EAN' and 'MRP' -> ({ean: mrp}, messages)."""
+    """
+    Master file(s) -> ({key: mrp}, messages).
+    Needs an EAN column ('EAN' / 'EAN Code') and 'MRP'. If a 'Nykaa Code' column exists, MRP is
+    also stored under 'SKU:<code>' so lines can be found by the PO Item Code when the EAN differs.
+    Every sheet in every file is read.
+    """
     import pandas as pd
 
     mrp, msgs = {}, []
     for name, data in files:
         try:
-            df = pd.read_excel(io.BytesIO(data), dtype={"EAN": str})
+            sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=object)
         except Exception as e:
             msgs.append(f"{name}: could not read ({e})")
             continue
-        df.columns = [str(c).strip() for c in df.columns]
-        upper = {c.upper(): c for c in df.columns}
-        if "EAN" not in upper or "MRP" not in upper:
-            msgs.append(f"{name}: skipped - columns 'EAN' and 'MRP' not found")
-            continue
-        n = 0
-        for e, m in zip(df[upper["EAN"]], df[upper["MRP"]]):
-            e = norm_ean(e)
-            if e and e.lower() != "nan" and e not in mrp and pd.notna(m):
+        n_ean = n_sku = 0
+        for sheet, df in sheets.items():
+            cols = {" ".join(str(c).split()).upper(): c for c in df.columns}
+            c_ean = next((cols[h] for h in cols if h in EAN_HEADERS), None)
+            c_mrp = cols.get("MRP")
+            c_sku = next((cols[h] for h in cols if h in SKU_HEADERS), None)
+            if c_mrp is None or (c_ean is None and c_sku is None):
+                continue
+            for _, r in df.iterrows():
                 try:
-                    mrp[e] = float(m)
-                    n += 1
+                    m = float(r[c_mrp])
                 except (TypeError, ValueError):
-                    pass
-        msgs.append(f"{name}: {n} EANs loaded")
+                    continue
+                if pd.isna(m) or m <= 0:
+                    continue
+                if c_ean is not None:
+                    e = norm_ean(r[c_ean])
+                    if e and e.lower() != "nan" and e not in mrp:
+                        mrp[e] = m
+                        n_ean += 1
+                if c_sku is not None and pd.notna(r[c_sku]):
+                    k = "SKU:" + str(r[c_sku]).strip().upper()
+                    if k not in mrp:
+                        mrp[k] = m
+                        n_sku += 1
+        if n_ean or n_sku:
+            msgs.append(f"{name}: {n_ean} EANs" + (f" + {n_sku} Nykaa codes" if n_sku else "") + " loaded")
+        else:
+            msgs.append(f"{name}: skipped - needs an 'EAN Code' (or 'EAN') column and an 'MRP' column")
     return mrp, msgs
+
+
+def lookup_mrp(master: dict, invoice_ean: str, po_ean: str, po_sku: str):
+    """MRP by invoice EAN, then PO EAN, then PO Item Code (= Nykaa Code)."""
+    for k in (norm_ean(invoice_ean), norm_ean(po_ean), "SKU:" + str(po_sku).strip().upper()):
+        if k and k in master:
+            return master[k]
+    return None
 
 
 def invoice_values(il: InvoiceLine, is_igst: bool, mrp) -> dict:
