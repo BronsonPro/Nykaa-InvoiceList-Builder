@@ -311,16 +311,27 @@ EAN_HEADERS = {"EAN", "EAN CODE", "EAN NO", "EAN NUMBER", "BARCODE"}
 SKU_HEADERS = {"NYKAA CODE", "NYKAA SKU", "SKU CODE", "ITEM CODE"}
 
 
-def load_master(files: list[tuple[str, bytes]]) -> tuple[dict, list[str]]:
+@dataclass
+class Master:
+    mrp: dict = field(default_factory=dict)          # EAN or 'SKU:<code>' -> MRP
+    ean_by_sku: dict = field(default_factory=dict)   # Nykaa Code -> set of EANs
+    sku_by_ean: dict = field(default_factory=dict)   # EAN -> Nykaa Code
+
+    def __bool__(self):
+        return bool(self.mrp)
+
+
+def load_master(files: list[tuple[str, bytes]]) -> tuple[Master, list[str]]:
     """
-    Master file(s) -> ({key: mrp}, messages).
+    Master file(s) -> (Master, messages).
     Needs an EAN column ('EAN' / 'EAN Code') and 'MRP'. If a 'Nykaa Code' column exists, MRP is
     also stored under 'SKU:<code>' so lines can be found by the PO Item Code when the EAN differs.
     Every sheet in every file is read.
     """
     import pandas as pd
 
-    mrp, msgs = {}, []
+    master, msgs = Master(), []
+    mrp = master.mrp
     for name, data in files:
         try:
             sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, dtype=object)
@@ -336,6 +347,11 @@ def load_master(files: list[tuple[str, bytes]]) -> tuple[dict, list[str]]:
             if c_mrp is None or (c_ean is None and c_sku is None):
                 continue
             for _, r in df.iterrows():
+                if c_ean is not None and c_sku is not None and pd.notna(r[c_sku]):
+                    e, k = norm_ean(r[c_ean]), str(r[c_sku]).strip().upper()
+                    if e and e.lower() != "nan" and k and k != "NAN":
+                        master.ean_by_sku.setdefault(k, set()).add(e)
+                        master.sku_by_ean.setdefault(e, k)
                 try:
                     m = float(r[c_mrp])
                 except (TypeError, ValueError):
@@ -356,14 +372,14 @@ def load_master(files: list[tuple[str, bytes]]) -> tuple[dict, list[str]]:
             msgs.append(f"{name}: {n_ean} EANs" + (f" + {n_sku} Nykaa codes" if n_sku else "") + " loaded")
         else:
             msgs.append(f"{name}: skipped - needs an 'EAN Code' (or 'EAN') column and an 'MRP' column")
-    return mrp, msgs
+    return master, msgs
 
 
-def lookup_mrp(master: dict, invoice_ean: str, po_ean: str, po_sku: str):
+def lookup_mrp(master: Master, invoice_ean: str, po_ean: str, po_sku: str):
     """MRP by invoice EAN, then PO EAN, then PO Item Code (= Nykaa Code)."""
     for k in (norm_ean(invoice_ean), norm_ean(po_ean), "SKU:" + str(po_sku).strip().upper()):
-        if k and k in master:
-            return master[k]
+        if k and k in master.mrp:
+            return master.mrp[k]
     return None
 
 
@@ -385,23 +401,47 @@ def invoice_values(il: InvoiceLine, is_igst: bool, mrp) -> dict:
     )
 
 
-def auto_match(po: PurchaseOrder, inv: SalesInvoice) -> tuple[dict, list[int], list[int]]:
+def auto_match(po: PurchaseOrder, inv: SalesInvoice, master: Master | None = None
+               ) -> tuple[dict, list[int], list[int], dict]:
     """
-    Match invoice lines to PO lines by EAN.
-    Returns ({invoice_idx: po_idx}, unmatched_invoice_idx, unmatched_po_idx)
+    Match invoice lines to PO lines.
+      1. same EAN in PO and invoice
+      2. via the Master file: some Nykaa POs show the SKU code (Nykaa Code) in the EAN column, or a
+         wrong EAN. The PO's Item Code / EAN-column value is looked up as a Nykaa Code in the Master
+         to get the real EAN(s), which are then matched to the invoice.
+    Returns ({invoice_idx: po_idx}, unmatched_invoice_idx, unmatched_po_idx, {invoice_idx: how})
     """
+    pairs, used, how = {}, set(), {}
+
     po_by_ean = {}
     for i, ln in enumerate(po.lines):
         po_by_ean.setdefault(norm_ean(ln.ean), i)
-    pairs, used = {}, set()
     for j, il in enumerate(inv.lines):
         i = po_by_ean.get(il.ean)
         if i is not None and i not in used:
-            pairs[j] = i
+            pairs[j], how[j] = i, "EAN"
             used.add(i)
+
+    if master is not None and master.ean_by_sku:
+        inv_by_ean = {}
+        for j, il in enumerate(inv.lines):
+            if j not in pairs:
+                inv_by_ean.setdefault(il.ean, j)
+        for i, ln in enumerate(po.lines):
+            if i in used:
+                continue
+            codes = {str(ln.sku_code).strip().upper(), str(ln.ean).strip().upper()}
+            eans = set().union(*(master.ean_by_sku.get(c, set()) for c in codes))
+            for e in sorted(eans):
+                j = inv_by_ean.get(e)
+                if j is not None and j not in pairs:
+                    pairs[j], how[j] = i, f"Master file: Nykaa Code {ln.sku_code} = EAN {e}"
+                    used.add(i)
+                    break
+
     un_inv = [j for j in range(len(inv.lines)) if j not in pairs]
     un_po = [i for i in range(len(po.lines)) if i not in used]
-    return pairs, un_inv, un_po
+    return pairs, un_inv, un_po, how
 
 
 def suggest(il: InvoiceLine, po: PurchaseOrder, candidates: list[int]) -> tuple[int | None, float]:
