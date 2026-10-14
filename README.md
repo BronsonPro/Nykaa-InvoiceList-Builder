@@ -3,13 +3,19 @@
 Upload **all three** files and download `InvoiceList_<PONumber>.xlsx` in Nykaa's upload format:
 
 1. **Master file(s)**: Excel with an `EAN Code` (or `EAN`) column and an `MRP` column (gives Invoice MRP).
-   More than one file is allowed, and every sheet is read. An optional `Nykaa Code` column is used as a backup match.
+   More than one file is allowed, and every sheet is read. A `Nykaa Code` column is used to match lines whose EAN differs (see below).
 2. **Nykaa PO**: `PoAlpha_*.xls` (gives columns A–J)
 3. **Sales invoice**: Tally GST invoice `.xlsx` (gives columns K–V)
 
-Invoice lines are matched to PO lines by EAN. If an invoice EAN isn't in the PO (for example, a wrong
-EAN on Nykaa's PO), the app suggests the right PO line by product name and lets you confirm it.
-PO lines that weren't invoiced are left out, and the app lists them.
+Invoice lines are matched to PO lines in this order:
+1. **Same EAN** in the PO and the invoice.
+2. **Via the Master file:** some Nykaa POs show the SKU code (Nykaa Code) in the EAN column, or a wrong
+   EAN. The PO's Item Code is looked up as a `Nykaa Code` in the Master file, and the EAN listed there
+   is matched to the invoice.
+3. **Manual:** anything still unmatched is shown with a best-guess PO line, chosen by product name, for
+   you to confirm. Invoiced items that end up left out are flagged in red.
+
+PO lines that weren't invoiced are left out of the file, and the app lists them.
 The download only appears once all three files are uploaded and they belong to the same PO.
 
 ## Files
