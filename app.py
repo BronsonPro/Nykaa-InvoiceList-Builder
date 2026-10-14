@@ -32,11 +32,11 @@ if missing:
     st.info("Upload all three files to continue. Still needed: **" + ", ".join(missing) + "**")
     st.stop()
 
-master_mrp, msgs = load_master([(f.name, f.getvalue()) for f in master_files])
+master, msgs = load_master([(f.name, f.getvalue()) for f in master_files])
 with u1:
     for m in msgs:
         (st.caption if "loaded" in m else st.warning)(m)
-if not master_mrp:
+if not master:
     st.error("No MRP data found in the Master file(s). It needs an 'EAN Code' (or 'EAN') column and an 'MRP' column.")
     st.stop()
 
@@ -73,9 +73,20 @@ if missing_vsku:
 po_rows = po_to_rows(po, fallback)
 
 # ---- match invoice lines to PO lines ------------------------------------------
-pairs, un_inv, un_po = auto_match(po, inv)
+pairs, un_inv, un_po, how = auto_match(po, inv, master)
 st.subheader("Matching")
-st.write(f"✅ **{len(pairs)}** of {len(inv.lines)} invoice lines matched to the PO by EAN.")
+n_ean = sum(1 for h in how.values() if h == "EAN")
+via_master = {j: h for j, h in how.items() if h != "EAN"}
+st.write(f"✅ **{len(pairs)}** of {len(inv.lines)} invoice lines matched automatically "
+         f"({n_ean} by EAN" + (f", {len(via_master)} via the Master file's Nykaa Code" if via_master else "")
+         + ").")
+if via_master:
+    with st.expander(f"{len(via_master)} line(s) matched via the Master file (EAN differs between PO and invoice)",
+                     expanded=True):
+        st.dataframe(pd.DataFrame([{
+            "PO Line": po.lines[pairs[j]].line_no, "Product": po.lines[pairs[j]].product_name,
+            "EAN in PO": po.lines[pairs[j]].ean, "EAN in invoice": inv.lines[j].ean, "Matched by": h,
+        } for j, h in via_master.items()]), hide_index=True, use_container_width=True)
 
 SKIP = "— Not in PO (leave out) —"
 po_label = {i: f"Line {po.lines[i].line_no} · {po.lines[i].product_name[:60]} · EAN {po.lines[i].ean}"
@@ -95,6 +106,12 @@ if un_inv:
         if pick != SKIP:
             pairs[j] = pick
 
+skipped = [j for j in range(len(inv.lines)) if j not in pairs]
+if skipped:
+    st.error(f"{len(skipped)} invoiced item(s) will NOT be in the file: " +
+             "; ".join(f"{inv.lines[j].name} (EAN {inv.lines[j].ean}, qty {int(inv.lines[j].qty)})"
+                       for j in skipped) + ". Pick their PO line above if they belong to this PO.")
+
 chosen = list(pairs.values())
 dupes = {i for i in chosen if chosen.count(i) > 1}
 if dupes:
@@ -113,7 +130,7 @@ if left_po:
 rows, no_mrp, over_qty = [], [], []
 for j, i in sorted(pairs.items(), key=lambda kv: po.lines[kv[1]].line_no):
     il, pl = inv.lines[j], po.lines[i]
-    mrp = lookup_mrp(master_mrp, il.ean, pl.ean, pl.sku_code)
+    mrp = lookup_mrp(master, il.ean, pl.ean, pl.sku_code)
     if mrp is None:
         no_mrp.append(f"line {pl.line_no} (EAN {il.ean})")
     if il.qty > pl.qty:
